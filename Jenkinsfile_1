@@ -1,0 +1,71 @@
+#!/usr/bin/env groovy
+// -*- coding: utf-8; mode: Groovy; -*-
+//@Library('shared-libraries@master')_
+
+/* Description:
+env.JENKINS_AGENT = "t-project-jenkins-02" // Agent for pipeline execution, t - for test, d - for dev
+env.IMAGE_TAG = "test" // TAG for Nexus URL, test - for test, latest - for dev
+env.NAMESPACE = "gt-project-test-backends-01" // Namspace for HelmChart deployment: test - for test, dev - for dev
+env.CUSTOMER_TOKEN = "PROJECT-TEST-TOKEN-GT-PROJECT-TEST-BACKENDS-01" // Creds for chart deployment, TEST - for test, DEV - for dev
+*/
+
+env.NEXUS3_URL = "sw.hostname.ru:444/project_dev" // Nexus registry URL
+env.NEXUS_CRED_NAME = "tuz_project_ci_nexus" // Creds for Nexus
+
+//---- CHANGE THE NAME FOR ANOTHER SERVICE -----
+
+env.SERVICE_NAME = "cool-service" // Service name for Nexus URL and chart deployment
+
+//-------------------------------------
+def JENKINS_AGENT = null // Default agent name
+if (env.BRANCH_NAME == 'develop')
+{
+env.JENKINS_AGENT = "d-project-jenkins-02" 
+env.IMAGE_TAG = "latest"
+env.NAMESPACE = "gt-project-dev-backends-01"
+env.CUSTOMER_TOKEN = "PROJECT-DEV-TOKEN-GT-PROJECT-DEV-BACKENDS-01" 
+} 
+else if (env.BRANCH_NAME == 'test')
+{
+env.JENKINS_AGENT = "t-project-jenkins-02"
+env.IMAGE_TAG = "test"
+env.NAMESPACE = "gt-project-test-backends-01"
+env.CUSTOMER_TOKEN = "PROJECT-TEST-TOKEN-GT-PROJECT-TEST-BACKENDS-01" 
+}
+
+pipeline {
+    agent { label JENKINS_AGENT}
+    triggers {
+        pollSCM 'H/2 * * * *'
+    }
+    stages {
+        stage('Docker Build ') {
+            environment{
+                NEXUS_CREDS = credentials("${NEXUS_CRED_NAME}")
+            }
+            when {
+                branch 'develop'
+            }
+            steps {
+                sh 'docker login https://${NEXUS3_URL} -u ${NEXUS_CREDS_USR} -p ${NEXUS_CREDS_PSW}'
+                sh 'docker build -t ${NEXUS3_URL}/${SERVICE_NAME}/${BRANCH_NAME}/${SERVICE_NAME}:${IMAGE_TAG} ./ --network="host"'
+                sh 'docker push ${NEXUS3_URL}/${SERVICE_NAME}/${BRANCH_NAME}/${SERVICE_NAME}:${IMAGE_TAG}'
+                sh 'docker rmi ${NEXUS3_URL}/${SERVICE_NAME}/${BRANCH_NAME}/${SERVICE_NAME}:${IMAGE_TAG}'
+            }
+        }
+        stage('Deploy') {
+            environment{
+                KUBER_CREDS = credentials("${CUSTOMER_TOKEN}")
+                DOCKER_CREDS = credentials('tuz_pid_pidmsk')
+            }
+            when {
+                branch 'develop'
+            }
+            steps {
+                echo 'Deploy'
+                sh 'docker login http://base.sw.hostname.space/pid_dev/ansible_dev/ -u ${DOCKER_CREDS_USR} -p ${DOCKER_CREDS_PSW}'
+                sh 'docker run --rm -v "\$(pwd)":/config base.sw.hostname.space/pid_dev/ansible_dev/docker-helm:1 helm upgrade --install --history-max 5 --wait --kube-apiserver ${KUBER_CREDS_USR} --kube-token ${KUBER_CREDS_PSW} --namespace ${NAMESPACE} ${SERVICE_NAME} ./deployment/${SERVICE_NAME}'
+            }
+        }
+    }
+}
